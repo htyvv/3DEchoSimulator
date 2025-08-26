@@ -28,7 +28,7 @@ class MainWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("EchoCardiacSimulator")
-        self.setGeometry(100, 100, 1600, 900)
+        self.setGeometry(100, 100, 1440, 900)
         
         self.vtk_actor = None; self.probe_actor = None; self.wedge_actor = None
         self.camera_style = None; self.picker = vtk.vtkCellPicker(); self.picker.SetTolerance(0.005)
