@@ -102,6 +102,7 @@ def setup_options_panel(main_window):
     main_window.probe_info_label = QLabel("Position: [N/A]\nTilt: 0.0\nRock: 0.0\nRotate: 0.0")
     probe_layout.addWidget(main_window.probe_info_label)
     probe_group.setLayout(probe_layout)
+    main_window.probe_group = probe_group
     layout.addWidget(probe_group)
     
     layout.addStretch(1)
