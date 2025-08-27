@@ -5,7 +5,7 @@ import pyvista as pv
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFileDialog, QColorDialog, QHBoxLayout,
     QVBoxLayout, QGridLayout, QLabel, QSlider, QComboBox, QPushButton, QGroupBox,
-    QListWidget, QCheckBox, QDoubleSpinBox
+    QListWidget, QCheckBox
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
@@ -29,7 +29,6 @@ except ImportError as e:
 
 # scikit-image is used for fast polygon filling
 try:
-    import skimage
     from skimage.draw import polygon as skimage_polygon
 except ImportError:
     print("Warning: scikit-image not found. Please install it (`pip install scikit-image`) for 2D slicing.")
@@ -62,7 +61,6 @@ class MainWindowV2(QMainWindow):
         self.picker.SetTolerance(0.005)
         self.probe_transform = vtk.vtkTransform()
         self.is_planting_mode = False
-        self.current_probe_offset = 2.0 # Initial value, will be controlled by UI
         
         self.display_mesh = None
         
@@ -169,20 +167,14 @@ class MainWindowV2(QMainWindow):
         self.probe_info_label = QLabel("Position: [N/A]")
         self.probe_info_label.setWordWrap(True)
         self.fan_radius_slider = QSlider(Qt.Horizontal)
-        self.fan_radius_slider.setRange(20, 150); self.fan_radius_slider.setValue(80)        
-        self.probe_offset_spinbox = QDoubleSpinBox()
-        self.probe_offset_spinbox.setRange(0.0, 20.0)
-        self.probe_offset_spinbox.setSingleStep(0.5)
-        self.probe_offset_spinbox.setValue(self.current_probe_offset)
-        self.probe_offset_spinbox.setSuffix(" mm")
+        self.fan_radius_slider.setRange(20, 150); self.fan_radius_slider.setValue(80)
         self.fan_color_button = QPushButton("Color")
         self.fan_opacity_slider = QSlider(Qt.Horizontal)
         self.fan_opacity_slider.setRange(0, 100); self.fan_opacity_slider.setValue(50)
         probe_layout.addWidget(self.probe_info_label, 0, 0, 1, 2)
         probe_layout.addWidget(QLabel("Fan Radius:"), 1, 0); probe_layout.addWidget(self.fan_radius_slider, 1, 1)
-        probe_layout.addWidget(QLabel("Pivot Offset:"), 2, 0); probe_layout.addWidget(self.probe_offset_spinbox, 2, 1)
-        probe_layout.addWidget(QLabel("Fan Color:"), 3, 0); probe_layout.addWidget(self.fan_color_button, 3, 1)
-        probe_layout.addWidget(QLabel("Fan Opacity:"), 4, 0); probe_layout.addWidget(self.fan_opacity_slider, 4, 1)
+        probe_layout.addWidget(QLabel("Fan Color:"), 2, 0); probe_layout.addWidget(self.fan_color_button, 2, 1)
+        probe_layout.addWidget(QLabel("Fan Opacity:"), 3, 0); probe_layout.addWidget(self.fan_opacity_slider, 3, 1)
         options_layout.addWidget(self.probe_group)
 
         # Camera Options
@@ -211,7 +203,7 @@ class MainWindowV2(QMainWindow):
         self.camera_style.SetDefaultRenderer(self.renderer_3d)
         self.camera_style.SetKeyPressActivation(False)
         self.interactor_3d.SetInteractorStyle(self.camera_style)
-        self.interactor_3d.AddObserver("KeyPressEvent", self._key_press_handler, 10.0)
+        self.interactor_3d.AddObserver("KeyPressEvent", self._key_press_handler, 1.0)
         self.interactor_3d.AddObserver("LeftButtonPressEvent", self._left_button_press_handler, 1.0)
         self.interactor_3d.AddObserver("MouseMoveEvent", self._mouse_move_handler, 1.0)
         if hasattr(self.camera_style, 'SetMotionFactor'): self.camera_style.SetMotionFactor(0.85)
@@ -259,7 +251,6 @@ class MainWindowV2(QMainWindow):
         self.save_screenshot_button.clicked.connect(self._save_screenshot)
         self.sensitivity_slider.valueChanged.connect(self._set_camera_sensitivity)
         self.fan_radius_slider.valueChanged.connect(self._update_probe_shape)
-        self.probe_offset_spinbox.valueChanged.connect(self._update_probe_offset)
         self.fan_color_button.clicked.connect(self._set_probe_color)
         self.fan_opacity_slider.valueChanged.connect(self._set_probe_opacity)
         self.probe_updated.connect(self._handle_probe_update_gui)
@@ -292,17 +283,11 @@ class MainWindowV2(QMainWindow):
                 
                 matrix = vtk.vtkMatrix4x4()
                 matrix.Identity()
-
-                # Offset the pivot point slightly outwards from the mesh surface
-                offset_value = self.probe_offset_spinbox.value()
-                self.current_probe_offset = offset_value
-                offset_pick_pos = [pick_pos[i] + pick_normal[i] * offset_value for i in range(3)]
-
                 for i in range(3):
                     matrix.SetElement(i, 0, probe_x[i])
                     matrix.SetElement(i, 1, probe_y[i])
                     matrix.SetElement(i, 2, probe_z[i])
-                    matrix.SetElement(i, 3, offset_pick_pos[i])
+                    matrix.SetElement(i, 3, pick_pos[i])
 
                 self.probe_transform.SetMatrix(matrix)
                 self._update_probe_view()
@@ -311,51 +296,46 @@ class MainWindowV2(QMainWindow):
         if self.is_planting_mode:
             self.is_planting_mode = False
             self._update_planting_mode_visuals()
-    
-    def _key_press_handler(self, interactor, event):
-        # 프로브가 없으면 아무 작업도 하지 않음
-        if not self.probe_actor:
-            return
 
+    def _key_press_handler(self, interactor, event):
+        if not self.probe_actor: return
         key = interactor.GetKeySym()
 
-        # 처리할 키 목록 (VTK 기본 동작을 막아야 하는 키)
-        # 'p'는 VTK에서 'pick'으로, 'w'는 'wireframe' 토글로 사용될 수 있음
-        handled_keys = set(self.KEY_CONFIG.values())
-
-        if key not in handled_keys:
-            return  # 처리할 키가 아니면 여기서 종료
-
-        # VTK의 기본 키 입력을 무시하도록 설정
-        interactor.SetKeyCode('.')
-        interactor.SetKeySym('.')
-
-        # 'p' 키는 모드 전환이므로 특별 처리
+        # 프로브 심기(Planting) 기능 처리
+        # 이 키가 눌리면 planting 모드를 토글하고, 이벤트 전파를 중단(AbortFlagOn)하여
+        # VTK의 기본 'p'(pick) 기능이 실행되지 않도록 합니다.
         if key == self.KEY_CONFIG['PLANT_PROBE']:
             self.is_planting_mode = not self.is_planting_mode
             self._update_planting_mode_visuals()
-            return  # 모드 전환 후 바로 종료
+            interactor.AbortFlagOn() # 올바른 메서드: 이벤트 전파 중단
+            return
 
-        # 핵심은 프로브의 transform 객체에 직접 변환을 적용하는 것입니다.
-        # RotateZ, Translate 등의 메서드는 누적되며, 객체의 '로컬' 좌표계를
-        # 기준으로 동작하므로 직관적인 프로브 조작에 정확히 부합합니다.
-        if key == self.KEY_CONFIG['TILT_UP']:       self.probe_transform.RotateZ(-self.SENSITIVITY['TILT_ROCK'])
-        elif key == self.KEY_CONFIG['TILT_DOWN']:   self.probe_transform.RotateZ(self.SENSITIVITY['TILT_ROCK'])
-        elif key == self.KEY_CONFIG['ROCK_LEFT']:   self.probe_transform.RotateX(-self.SENSITIVITY['TILT_ROCK'])
-        elif key == self.KEY_CONFIG['ROCK_RIGHT']:  self.probe_transform.RotateX(self.SENSITIVITY['TILT_ROCK'])
-        elif key == self.KEY_CONFIG['ROTATE_CCW']:  self.probe_transform.RotateY(-self.SENSITIVITY['ROTATE'])
-        elif key == self.KEY_CONFIG['ROTATE_CW']:   self.probe_transform.RotateY(self.SENSITIVITY['ROTATE'])
-        # 이동 역시 로컬 좌표계를 기준으로 적용됩니다.
-        elif key == self.KEY_CONFIG['SLIDE_UP']:    self.probe_transform.Translate(self.SENSITIVITY['SLIDE'], 0, 0)
-        elif key == self.KEY_CONFIG['SLIDE_DOWN']:  self.probe_transform.Translate(-self.SENSITIVITY['SLIDE'], 0, 0)
-        elif key == self.KEY_CONFIG['SLIDE_LEFT']:  self.probe_transform.Translate(0, 0, -self.SENSITIVITY['SLIDE'])
-        elif key == self.KEY_CONFIG['SLIDE_RIGHT']: self.probe_transform.Translate(0, 0, self.SENSITIVITY['SLIDE'])
+        delta_t = vtk.vtkTransform()
+        key_handled = True # 키가 처리되었는지 여부를 추적하는 플래그
+
+        # 프로브 조작 키 처리
+        if key == self.KEY_CONFIG['TILT_UP']: delta_t.RotateZ(-self.SENSITIVITY['TILT_ROCK'])
+        elif key == self.KEY_CONFIG['TILT_DOWN']: delta_t.RotateZ(self.SENSITIVITY['TILT_ROCK'])
+        elif key == self.KEY_CONFIG['ROCK_LEFT']: delta_t.RotateX(-self.SENSITIVITY['TILT_ROCK'])
+        elif key == self.KEY_CONFIG['ROCK_RIGHT']: delta_t.RotateX(self.SENSITIVITY['TILT_ROCK'])
+        elif key == self.KEY_CONFIG['ROTATE_CCW']: delta_t.RotateY(-self.SENSITIVITY['ROTATE'])
+        elif key == self.KEY_CONFIG['ROTATE_CW']: delta_t.RotateY(self.SENSITIVITY['ROTATE'])
+        elif key == self.KEY_CONFIG['SLIDE_UP']: delta_t.Translate(self.SENSITIVITY['SLIDE'], 0, 0)
+        elif key == self.KEY_CONFIG['SLIDE_DOWN']: delta_t.Translate(-self.SENSITIVITY['SLIDE'], 0, 0)
+        elif key == self.KEY_CONFIG['SLIDE_LEFT']: delta_t.Translate(0, 0, -self.SENSITIVITY['SLIDE'])
+        elif key == self.KEY_CONFIG['SLIDE_RIGHT']: delta_t.Translate(0, 0, self.SENSITIVITY['SLIDE'])
         else:
-            return # 우리가 처리하는 키가 아님
+            key_handled = False # 우리가 정의한 키가 아니면 플래그를 False로 설정
 
-        # 변환이 적용되었으므로, 프로브 상태 업데이트
-        self.current_standard_view = None
-        self._update_probe_view()
+        # 우리가 정의한 키 중 하나가 눌렸다면,
+        # 프로브를 업데이트하고 이벤트 전파를 중단합니다.
+        # 'w' 키가 TILT_UP으로 사용되었으므로 여기서 처리되어
+        # VTK의 기본 'wireframe' 기능이 실행되지 않습니다.
+        if key_handled:
+            self.current_standard_view = None
+            self.probe_transform.Concatenate(delta_t)
+            self._update_probe_view()
+
 
     def _update_planting_mode_visuals(self):
         if self.is_planting_mode:
@@ -389,8 +369,8 @@ class MainWindowV2(QMainWindow):
         diagonal_length = np.sqrt(x_len**2 + y_len**2 + z_len**2)
         
         # Set a reasonable max and default value based on mesh size
-        new_max_radius = int(diagonal_length * 1.1)
-        new_default_radius = int(diagonal_length * 0.7)
+        new_max_radius = int(diagonal_length * 1.2)
+        new_default_radius = int(diagonal_length * 0.8)
         self.fan_radius_slider.setRange(20, new_max_radius)
         self.fan_radius_slider.setValue(new_default_radius)
         # --- End Dynamic Fan Radius ---
@@ -547,10 +527,8 @@ class MainWindowV2(QMainWindow):
 
     def _update_probe_view(self):
         if not self.probe_actor: return
-
         final_matrix = self.probe_transform.GetMatrix()
         self.probe_actor.SetUserMatrix(final_matrix)
-
         self.probe_updated.emit()
 
     def _handle_probe_update_gui(self):
@@ -636,20 +614,13 @@ class MainWindowV2(QMainWindow):
         # probe_z completes the right-handed coordinate system
         probe_z = np.cross(probe_x, probe_y)
         
-        # Offset the pivot point slightly outwards from the mesh surface
-        offset_value = self.probe_offset_spinbox.value()
-        self.current_probe_offset = offset_value
-        # probe_y는 심장 안쪽을 향하므로, 바깥쪽으로 이동시키기 위해 빼줍니다.
-        # (surface_origin과 probe_y는 numpy 배열이므로 벡터 연산이 가능합니다)
-        offset_surface_origin = surface_origin - probe_y * offset_value
-
         matrix = vtk.vtkMatrix4x4()
         matrix.Identity()
         for i in range(3):
             matrix.SetElement(i, 0, probe_x[i])
             matrix.SetElement(i, 1, probe_y[i])
             matrix.SetElement(i, 2, probe_z[i])
-            matrix.SetElement(i, 3, offset_surface_origin[i])
+            matrix.SetElement(i, 3, surface_origin[i])
         
         # --- Part 3: Update the main transform and trigger a full update ---
         self.probe_transform.SetMatrix(matrix)
@@ -659,124 +630,96 @@ class MainWindowV2(QMainWindow):
         if self.display_mesh is None or not self.probe_actor:
             self.image_actor_2d.SetInputData(self.empty_image_data)
             cam2d = self.renderer_2d.GetActiveCamera()
-            if cam2d: cam2d.SetParallelScale(128)
+            if cam2d: cam2d.SetParallelScale(128) # Default zoom
             self.vtkWidget_2d.GetRenderWindow().Render()
             return
 
-        if skimage_polygon is None:
-            if not hasattr(self, "_skimage_warning_shown"):
-                print("Warning: scikit-image is required for the fast slicing method. Please install it.")
-                self._skimage_warning_shown = True
-            return
-
-        # 1단계: 프로브 위치/방향으로 절단 평면 생성
-        transform_matrix = self.probe_transform.GetMatrix()
-        origin = np.array([transform_matrix.GetElement(i, 3) for i in range(3)])
-        normal = np.array([transform_matrix.GetElement(i, 0) for i in range(3)])
-
-        plane = vtk.vtkPlane()
-        plane.SetOrigin(origin)
-        plane.SetNormal(normal)
-
-        # 2단계: vtkCutter로 메쉬 절단
-        cutter = vtk.vtkCutter()
-        cutter.SetCutFunction(plane)
-        cutter.SetInputData(self.display_mesh)
-        
-        # 선들이 끊기지 않도록 vtkStripper를 사용
-        stripper = vtk.vtkStripper()
-        stripper.SetInputConnection(cutter.GetOutputPort())
-        stripper.Update()
-        
-        slice_polylines = stripper.GetOutput()
-        if slice_polylines.GetNumberOfPoints() == 0:
-            self.image_actor_2d.SetInputData(self.empty_image_data)
-            self.vtkWidget_2d.GetRenderWindow().Render()
-            return
-            
-        # 3단계: 3D 절단선을 2D 이미지 좌표로 변환
-        h, w = 256, 256
+        # --- Step 1: Define Grid in Probe's Local Space ---
+        h, w = 192, 192 # Reduced resolution for performance
         radius = self.fan_radius_slider.value()
-        y_axis = np.array([transform_matrix.GetElement(i, 1) for i in range(3)])
-        z_axis = np.array([transform_matrix.GetElement(i, 2) for i in range(3)])
-        final_arr = np.zeros((h, w), dtype=np.uint8)
 
-        # --- 4단계: [변경점] 면(polygon) 대신 선(line) 그리기 ---
-        slice_polylines.GetLines().InitTraversal()
-        id_list = vtk.vtkIdList()
-        while slice_polylines.GetLines().GetNextCell(id_list):
-            # 3D 폴리라인 좌표를 가져옴
-            points_3d = np.array([slice_polylines.GetPoint(id_list.GetId(i)) for i in range(id_list.GetNumberOfIds())])
-            
-            # 3D -> 2D 좌표로 변환
-            points_relative = points_3d - origin
-            y_coords = np.dot(points_relative, y_axis)
-            z_coords = np.dot(points_relative, z_axis)
+        # Always create a rectangular grid. The cone effect will be a post-processing mask.
+        y_coords = np.linspace(0, radius, h)
+        # The width of the slice should be proportional to the depth (radius)
+        z_coords = np.linspace(-radius, radius, w)
 
-            # 이미지 크기에 맞게 스케일링
-            col_coords = (z_coords / (2 * radius) + 0.5) * (w - 1)
-            row_coords = (y_coords / radius) * (h - 1)
-            
-            # 폴리라인의 각 선분(segment)을 순회하며 직접 선을 그림
-            for i in range(len(row_coords) - 1):
-                r0, c0 = int(row_coords[i]), int(col_coords[i])
-                r1, c1 = int(row_coords[i+1]), int(col_coords[i+1])
-                
-                # skimage.draw.line을 사용하여 두 점 사이에 선을 그림
-                rr, cc = skimage.draw.line(r0, c0, r1, c1)
-                
-                # 라인이 이미지 경계 내에 있는지 확인 후 값을 설정
-                valid_indices = (rr >= 0) & (rr < h) & (cc >= 0) & (cc < w)
-                final_arr[rr[valid_indices], cc[valid_indices]] = 2 # 조직(tissue)
+        spacing_y = y_coords[1] - y_coords[0] if h > 1 else 1
+        spacing_z = z_coords[1] - z_coords[0] if w > 1 else 1
 
-        # 5단계: 콘(cone) 효과 적용 (이전과 동일)
+        zz, yy = np.meshgrid(z_coords, y_coords)
+        # Our slice plane is the YZ plane in the probe's local coordinates (X=0)
+        grid_points_local = np.vstack([np.zeros(w*h), yy.ravel(), zz.ravel()]).T
+
+        # --- Step 2: Transform Grid to World Space ---
+        vtk_points_local = vtk.vtkPoints()
+        vtk_points_local.SetData(numpy_to_vtk(grid_points_local, deep=True))
+        polydata_local = vtk.vtkPolyData()
+        polydata_local.SetPoints(vtk_points_local)
+
+        transform_filter = vtk.vtkTransformPolyDataFilter()
+        transform_filter.SetTransform(self.probe_transform)
+        transform_filter.SetInputData(polydata_local)
+        transform_filter.Update()
+        
+        grid_in_world_space = transform_filter.GetOutput()
+
+        # --- Step 3: Determine which points are inside the mesh ---
+        select_enclosed = vtk.vtkSelectEnclosedPoints()
+        select_enclosed.SetInputData(grid_in_world_space)
+        select_enclosed.SetSurfaceData(self.display_mesh)
+        select_enclosed.Update()
+
+        # --- Step 4: Create Image from the inside/outside mask ---
+        is_inside = vtk_to_numpy(select_enclosed.GetOutput().GetPointData().GetArray("SelectedPoints"))
+        slice_arr = is_inside.reshape(h, w)
+
+        # --- Step 5: Apply Cone & Colors ---
+        # Now, we only care about inside (1) vs outside (0)
+        # 0 -> background, 1 -> cone, 2 -> tissue
+        final_arr = np.zeros_like(slice_arr, dtype=np.uint8)
+        
         if self.apply_cone_checkbox.isChecked():
-            angle_rad = np.pi * 2 / 3
+            # Create a fan-shaped mask for the cone effect
+            angle_rad = np.pi * 2/3 # 120 degrees
             yy_mask, xx_mask = np.mgrid[:h, :w]
             origin_x, origin_y = w / 2.0, 0.0
             angle = np.arctan2(yy_mask - origin_y, xx_mask - origin_x)
-            angle_mask = (angle > np.pi / 2 - angle_rad / 2) & (angle < np.pi / 2 + angle_rad / 2)
+            angle_mask = (angle > np.pi/2 - angle_rad/2) & (angle < np.pi/2 + angle_rad/2)
             
-            final_arr[(final_arr == 0) & angle_mask] = 1
-            final_arr[~angle_mask] = 0
-        
-        # 6단계: 이미지 렌더링 (이전과 동일)
+            # Tissue (value 2) is where the slice is inside the mesh AND inside the cone
+            final_arr[(slice_arr == 1) & (angle_mask)] = 2
+            # Speckle (value 1) is where the slice is outside the mesh BUT inside the cone
+            final_arr[(slice_arr == 0) & (angle_mask)] = 1
+        else:
+            # No cone, just show the tissue
+            final_arr[slice_arr == 1] = 2
+
+        # --- Step 6: Render Image ---
         data_string = final_arr.astype(np.uint8).tobytes()
         self.data_importer_2d.CopyImportVoidPointer(data_string, len(data_string))
         self.data_importer_2d.SetDataScalarTypeToUnsignedChar()
         self.data_importer_2d.SetNumberOfScalarComponents(1)
         self.data_importer_2d.SetDataExtent(0, w - 1, 0, h - 1, 0, 0)
         self.data_importer_2d.SetWholeExtent(0, w - 1, 0, h - 1, 0, 0)
+        # Set correct spacing to fix aspect ratio
+        self.data_importer_2d.SetDataSpacing(spacing_z, spacing_y, 1.0)
         
         self.color_map_2d.Update()
         self.image_actor_2d.SetInputData(self.color_map_2d.GetOutput())
 
+        # --- Set Camera for Top Pivot ---
         cam2d = self.renderer_2d.GetActiveCamera()
         cam2d.ParallelProjectionOn()
-        cam2d.SetPosition(w / 2.0, h / 2.0, 1)
-        cam2d.SetFocalPoint(w / 2.0, h / 2.0, 0)
-        cam2d.SetViewUp(0, -1, 0)
+        # Center camera on the image
+        cam2d.SetPosition(w / 2.0 * spacing_z, h / 2.0 * spacing_y, 1)
+        cam2d.SetFocalPoint(w / 2.0 * spacing_z, h / 2.0 * spacing_y, 0)
+        # Flip Y-axis to show fan pivot at the top
+        cam2d.SetViewUp(0, -1, 0) 
         self.renderer_2d.ResetCamera()
-        cam2d.SetParallelScale(h / 2.0)
+        # Set zoom to fit the image height
+        cam2d.SetParallelScale(h / 2.0 * spacing_y)
 
         self.vtkWidget_2d.GetRenderWindow().Render()
-
-    def _update_probe_offset(self, new_offset):
-        if not self.probe_actor: return
-
-        # 1. 마지막으로 알려진 값에서 offset의 '변화량'을 계산합니다.
-        delta_offset = new_offset - self.current_probe_offset
-
-        # 2. 프로브의 지역 Y축은 심장 안쪽을 향합니다.
-        #    바깥쪽으로 이동하려면 지역 Y축의 음수 방향으로 이동해야 합니다.
-        #    Translate() 메서드는 프로브의 지역 좌표계에서 이 변환을 올바르게 적용합니다.
-        self.probe_transform.Translate(0, -delta_offset, 0)
-        
-        # 3. 다음 계산을 위해 새로운 offset 값을 저장합니다.
-        self.current_probe_offset = new_offset
-        
-        # 4. 변경 사항을 반영하기 위해 전체 뷰 업데이트를 트리거합니다.
-        self._update_probe_view()
 
     def _set_actor_color(self):
         if not self.vtk_actor: return

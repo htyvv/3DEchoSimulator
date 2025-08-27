@@ -194,16 +194,33 @@ def save_plane_numpy(cfg, transformed_slice, save_loc, view_name):
 
 def get_plane_numpy(cfg, transformed_slice):
     resampler = vtk.vtkResampleToImage()
+    # Explicitly tell the resampler to process the 'elemTag' cell data array.
+    # This is crucial for ensuring the scalars are interpolated to the output image.
+    resampler.SetInputArrayToProcess(
+        0, 0, 0, vtk.vtkDataObject.FIELD_ASSOCIATION_CELLS, cfg.LABELS.LABEL_NAME
+    )
     resampler.AddInputDataObject(transformed_slice)
     bounds = np.array(list(transformed_slice.bounds))
 
     resampler.SetSamplingBounds(*bounds[:5], 1.0)
     x_size = int(bounds[1] - bounds[0])
     y_size = int(bounds[3] - bounds[2])
+    # Ensure dimensions are at least 1 to avoid VTK errors
+    if x_size < 1: x_size = 1
+    if y_size < 1: y_size = 1
     resampler.SetSamplingDimensions(x_size, y_size, 1)
     resampler.Update()
 
-    img_as_array = vtk_to_numpy(resampler.GetOutput().GetPointData().GetArray(cfg.LABELS.LABEL_NAME))
+    output_image = resampler.GetOutput()
+    if not output_image:
+        return np.zeros((y_size, x_size), dtype=np.uint8)
+
+    img_vtk_array = output_image.GetPointData().GetArray(cfg.LABELS.LABEL_NAME)
+    if not img_vtk_array:
+        # This can happen if the input slice has no cells with the specified array.
+        return np.zeros((y_size, x_size), dtype=np.uint8)
+
+    img_as_array = vtk_to_numpy(img_vtk_array)
     img_as_array = img_as_array.reshape((y_size, x_size))
 
     return img_as_array.astype(np.uint8)

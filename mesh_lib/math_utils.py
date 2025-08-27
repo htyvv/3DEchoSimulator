@@ -35,6 +35,18 @@ def calc_rot_mat_to_xy_plane(normalized_v, check_determinant=False):
 
     a, b, c = normalized_v
 
+    # Handle case where the vector is already aligned with z-axis
+    if np.allclose([a, b], [0, 0]):
+        if c > 0:
+            return np.identity(4)
+        else: # Pointing along -z, rotate 180 degrees around x-axis
+            rot_mat = np.array([
+                [1., 0., 0.],
+                [0.,-1., 0.],
+                [0., 0.,-1.]
+            ])
+            return expand_rot_mat(rot_mat)
+
     square = a ** 2 + b ** 2 + c ** 2
 
     cos_theta = c / np.sqrt(square)
